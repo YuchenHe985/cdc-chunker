@@ -57,6 +57,32 @@ digest  = ((digest << 8) | incoming) ^ mod[digest >> 45]   // mod[b] = reduction
 A cut is made when `(digest & (avg_size - 1)) == 0`, subject to the same `min_size` / `max_size` rules.
 There is no normalization: the size distribution is close to geometric above `min_size`.
 
+## Parallel chunking
+
+The streaming chunkers are inherently sequential: where chunk *k+1* starts depends on where chunk *k* ended, so the
+work cannot simply be split at file offsets. Chunking each segment independently gives different boundaries from the
+sequential run, which would make an index built one way useless for the other. `chunk_parallel` avoids that in two stages:
+
+1. **Find candidates, in parallel.** By the locality property, whether the window ending at a position matches the cut mask
+   depends only on the previous 64 (Gear) or 48 (Rabin) bytes, not on where any chunk starts. Each thread hashes its
+   segment, after first hashing the bytes just before the segment so every window is exact, and records every position that
+   matches the relaxed mask (with a flag for the strict mask). Positions that match the strict mask also match the relaxed
+   one, so the list is a superset of every possible cut.
+2. **Select, sequentially.** Walking the chunks in order, a chunk starting at `s` ends at the first candidate whose length
+   is at least `min_size`, at most `max_size`, and passes the strict mask if it is below `avg_size`; otherwise at
+   `max_size` or the end of the buffer. This is exactly the rule the sequential chunker applies, over a list that is about
+   1/2048 of the positions, so it costs little.
+
+The price is that stage 1 hashes every byte, while the sequential chunker skips the first `min_size - 64` bytes of each
+chunk. One thread is therefore slower than the sequential chunker (0.76x for Gear at 8 KiB) and the parallel path pays off
+from two threads. Two-stage parallel chunking is an established idea (for example SS-CDC, cited in the literature on
+parallel deduplication); this is an independent implementation with a proof-by-test that the output is identical, not a
+new algorithm.
+
+Tests: 500 random parameter, content, thread-count and segment-size combinations; thread counts 1 to 12; segment counts 2
+to 30 over 40 inputs so that segment starts land on candidates; and the same reference cross-check as the sequential path.
+ThreadSanitizer runs the parallel tests in CI.
+
 ## Fixed-size chunker
 
 Blocks of exactly `avg_size` bytes. It exists as the baseline: one inserted byte moves every later block
@@ -71,7 +97,7 @@ boundary, so nothing after the edit deduplicates.
 | Behaviour tests (`test_dedup.cpp`) | boundaries survive an insertion and a deletion, mean size is near the target, normalization narrows the distribution |
 | Differential test (`tests/cross_check.py`) | 11 inputs and parameter sets produce the same chunk lengths as `tests/reference.py`, which computes every cut from the definition with no rolling state and shares no code with the library |
 | Golden vectors (`test_golden.cpp`) | any change to the algorithm moves boundaries, which would invalidate stored chunk indexes |
-| Mutation check (`tests/mutation_check.py`) | 18 injected bugs are each caught; 2 edits that cannot change the output (state the window makes irrelevant) survive, which documents that property |
+| Mutation check (`tests/mutation_check.py`) | 23 injected bugs are each caught; 2 edits that cannot change the output (state the window makes irrelevant) survive, which documents that property |
 | Sanitizers | ASan and UBSan over the whole suite in CI |
 
 ## Limits
@@ -80,8 +106,8 @@ boundary, so nothing after the edit deduplicates.
 - A chunker object holds per-stream state and is not thread-safe: use one per stream. The tables are
   immutable and shared, so separate objects can run on separate threads.
 - The `cdc` tool reads each input file into memory; the library itself only needs the last 64 bytes.
-- Single-threaded, no SIMD. Chunking a large file in parallel needs a coordinator that splits at
-  content-defined points; that is out of scope here.
+- The streaming chunkers are single-threaded and there is no SIMD. `chunk_parallel` needs the whole buffer addressable
+  (in memory or memory-mapped) and stores the candidate list, about 16 bytes per 2048 input bytes for Gear at 8 KiB.
 - The tools identify chunks by 64-bit FNV-1a, which is fine for measuring overlap and not a substitute
   for a cryptographic hash in a real deduplicating store.
 - `avg_size` must be a power of two and `min_size` at least 64.
