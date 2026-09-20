@@ -26,9 +26,13 @@ if(CDC_SANITIZE)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
-foreach(t cdc)
+add_executable(cdc_cli tools/cdc_cli.cpp)
+set_target_properties(cdc_cli PROPERTIES OUTPUT_NAME cdc)
+target_link_libraries(cdc_cli PRIVATE cdc)
+
+foreach(t cdc cdc_cli)
   target_compile_options(${t} PRIVATE ${CDC_WARNINGS})
 endforeach()
 
-install(TARGETS cdc ARCHIVE DESTINATION lib)
+install(TARGETS cdc cdc_cli ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
