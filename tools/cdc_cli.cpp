@@ -6,6 +6,7 @@
 //   cdc info                     constants that define the chunk boundaries
 //
 // options: --algo gear|rabin|fixed  --avg N  --min N  --max N  --norm N
+//          --threads N (0 = all cores; same chunks as one thread)  --segment-min N
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -25,6 +26,8 @@ namespace {
 struct Options {
   std::string algo = "gear";
   cdc::Params params;
+  unsigned threads = 1;              // 0 = one per hardware thread
+  std::size_t segment_min = 256 * 1024;
   std::vector<std::string> files;
 };
 
@@ -39,6 +42,8 @@ Options parse(int argc, char** argv, int first) {
   Options o;
   std::size_t avg = 0, min_v = 0, max_v = 0;
   int norm = -1;
+  unsigned threads = 1;
+  std::size_t segment_min = 256 * 1024;
   for (int i = first; i < argc; ++i) {
     const std::string a = argv[i];
     auto value = [&]() -> const char* {
@@ -55,6 +60,10 @@ Options parse(int argc, char** argv, int first) {
       max_v = parse_size(a, value());
     } else if (a == "--norm") {
       norm = static_cast<int>(parse_size(a, value()));
+    } else if (a == "--threads") {
+      threads = static_cast<unsigned>(parse_size(a, value()));
+    } else if (a == "--segment-min") {
+      segment_min = parse_size(a, value());
     } else if (!a.empty() && a[0] == '-') {
       throw std::invalid_argument("unknown option " + a);
     } else {
@@ -66,6 +75,8 @@ Options parse(int argc, char** argv, int first) {
   if (min_v != 0) o.params.min_size = min_v;
   if (max_v != 0) o.params.max_size = max_v;
   if (norm >= 0) o.params.normalization = norm;
+  o.threads = threads;
+  o.segment_min = segment_min;
   return o;
 }
 
@@ -76,6 +87,7 @@ std::vector<std::uint8_t> read_file(const std::string& path) {
 }
 
 std::vector<cdc::Chunk> chunk_file(const Options& o, const std::vector<std::uint8_t>& data) {
+  if (o.threads != 1) return cdc::chunk_parallel(o.algo, o.params, data.data(), data.size(), o.threads, o.segment_min);
   const auto chunker = cdc::make_chunker(o.algo, o.params);
   return cdc::chunk_all(*chunker, data.data(), data.size());
 }
@@ -155,7 +167,8 @@ void usage() {
       "usage: cdc chunk|stats [options] FILE\n"
       "       cdc dedup [options] OLD NEW\n"
       "       cdc info\n"
-      "options: --algo gear|rabin|fixed  --avg N  --min N  --max N  --norm N\n",
+      "options: --algo gear|rabin|fixed  --avg N  --min N  --max N  --norm N\n"
+      "         --threads N (0 = all cores; same chunks as the default single thread)  --segment-min N\n",
       stderr);
 }
 
