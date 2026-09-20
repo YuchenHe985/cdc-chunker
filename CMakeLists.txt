@@ -30,6 +30,12 @@ add_executable(cdc_cli tools/cdc_cli.cpp)
 set_target_properties(cdc_cli PROPERTIES OUTPUT_NAME cdc)
 target_link_libraries(cdc_cli PRIVATE cdc)
 
+add_executable(cdc_bench bench/bench.cpp)
+target_link_libraries(cdc_bench PRIVATE cdc)
+
+add_executable(cdc_example examples/stream.cpp)
+target_link_libraries(cdc_example PRIVATE cdc)
+
 add_executable(cdc_tests
   tests/test_main.cpp
   tests/test_params.cpp
@@ -39,7 +45,7 @@ add_executable(cdc_tests
   tests/test_golden.cpp)
 target_link_libraries(cdc_tests PRIVATE cdc)
 
-foreach(t cdc cdc_cli cdc_tests)
+foreach(t cdc cdc_cli cdc_bench cdc_example cdc_tests)
   target_compile_options(${t} PRIVATE ${CDC_WARNINGS})
 endforeach()
 
