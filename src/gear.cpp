@@ -4,13 +4,7 @@
 
 namespace cdc {
 
-namespace {
-
-// The top `bits` bits of a 64-bit word. Bit k of the Gear hash depends on the last k + 1 bytes,
-// so the top bits use the whole 64-byte window.
-std::uint64_t top_mask(int bits) { return bits <= 0 ? 0 : ~std::uint64_t{0} << (64 - bits); }
-
-}  // namespace
+using detail::top_mask;
 
 GearChunker::GearChunker(const Params& p) : p_(p) {
   p_.validate();

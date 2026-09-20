@@ -61,7 +61,11 @@ constexpr std::uint64_t kRabinPoly = 0x3DA3358B4DC173ULL;
 constexpr std::uint64_t kGearSeed = 0x243F6A8885A308D3ULL;
 
 std::uint64_t splitmix64(std::uint64_t& state);
-std::uint64_t fnv1a64(const std::uint8_t* data, std::size_t size);
+constexpr std::uint64_t kFnvOffset = 0xCBF29CE484222325ULL;
+// FNV-1a. Passing the previous result as `state` continues a hash across several buffers.
+std::uint64_t fnv1a64(const std::uint8_t* data, std::size_t size, std::uint64_t state = kFnvOffset);
+// The top `bits` bits of a 64-bit word set (0 for bits <= 0).
+std::uint64_t top_mask(int bits);
 
 const std::uint64_t* gear_table();
 // Definition of the Gear hash of a window: sum over j of table[w[n-1-j]] << j (mod 2^64), n <= 64.
@@ -159,5 +163,18 @@ std::unique_ptr<Chunker> make_chunker(const std::string& algo, const Params& p);
 
 // Resets the chunker, chunks one buffer and returns every chunk.
 std::vector<Chunk> chunk_all(Chunker& c, const std::uint8_t* data, std::size_t size);
+
+// Chunks a whole in-memory buffer on several threads. The chunks are identical to what the sequential
+// chunker returns for the same algorithm, parameters and buffer, whatever the thread count, so indexes
+// built either way are interchangeable.
+//
+// How: a cut decision depends only on the previous 64 (Gear) or 48 (Rabin) bytes, so every position
+// where the hash matches can be found independently in each segment of the buffer. A cheap sequential
+// pass then applies min_size, max_size and the strict/relaxed mask rule to that candidate list.
+//
+// algo is "gear", "rabin" or "fixed". threads == 0 uses the hardware concurrency. A segment is at
+// least min_segment bytes, so small buffers use fewer threads.
+std::vector<Chunk> chunk_parallel(const std::string& algo, const Params& p, const std::uint8_t* data,
+                                  std::size_t size, unsigned threads = 0, std::size_t min_segment = 256 * 1024);
 
 }  // namespace cdc

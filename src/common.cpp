@@ -42,14 +42,15 @@ std::uint64_t splitmix64(std::uint64_t& s) {
   return z ^ (z >> 31);
 }
 
-std::uint64_t fnv1a64(const std::uint8_t* data, std::size_t size) {
-  std::uint64_t h = 0xCBF29CE484222325ULL;
+std::uint64_t fnv1a64(const std::uint8_t* data, std::size_t size, std::uint64_t state) {
   for (std::size_t i = 0; i < size; ++i) {
-    h ^= data[i];
-    h *= 0x100000001B3ULL;
+    state ^= data[i];
+    state *= 0x100000001B3ULL;
   }
-  return h;
+  return state;
 }
+
+std::uint64_t top_mask(int bits) { return bits <= 0 ? 0 : ~std::uint64_t{0} << (64 - bits); }
 
 const std::uint64_t* gear_table() {
   static const std::array<std::uint64_t, 256> table = [] {

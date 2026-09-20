@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(cdc-chunker VERSION 0.1.0 LANGUAGES CXX)
+project(cdc-chunker VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,10 +12,13 @@ endif()
 
 option(CDC_WERROR "Treat warnings as errors" OFF)
 option(CDC_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(CDC_TSAN "Build with ThreadSanitizer" OFF)
 
-add_library(cdc STATIC src/common.cpp src/gear.cpp src/rabin.cpp)
+add_library(cdc STATIC src/common.cpp src/gear.cpp src/rabin.cpp src/parallel.cpp)
 target_include_directories(cdc PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_features(cdc PUBLIC cxx_std_17)
+find_package(Threads REQUIRED)
+target_link_libraries(cdc PUBLIC Threads::Threads)
 
 set(CDC_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
 if(CDC_WERROR)
@@ -24,6 +27,10 @@ endif()
 if(CDC_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
+endif()
+if(CDC_TSAN)
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
 endif()
 
 add_executable(cdc_cli tools/cdc_cli.cpp)
