@@ -2,19 +2,30 @@
 
 [![ci](https://github.com/YuchenHe985/cdc-chunker/actions/workflows/ci.yml/badge.svg)](https://github.com/YuchenHe985/cdc-chunker/actions/workflows/ci.yml)
 
-Content-defined chunking in C++17: a Gear chunker (FastCDC-style, with normalized chunk sizes) and a Rabin chunker
-behind one streaming interface, plus a command line tool, benchmarks, and a test suite that checks the code against an
-independent reference implementation and against deliberately injected bugs. Standard library only.
+cdc-chunker splits a byte stream into variable-size chunks whose boundaries depend on the content, so an edit changes only
+the chunks around it. Deduplicating storage, incremental backup and delta sync are built on this property; with fixed-size
+blocks, one inserted byte changes every block after it.
 
-Content-defined chunking cuts a stream where the *content* says so, so inserting or deleting a few bytes changes only the
-chunks around the edit. That is what makes deduplication, incremental backup and delta sync work; with fixed-size blocks a
-single inserted byte changes every block after it.
+It provides two chunkers behind one streaming interface, Gear (FastCDC-style, with normalized chunk sizes) and Rabin, a
+command line tool that reports how much of a new file version is already stored, and a benchmark harness. C++17, standard
+library only.
+
+## Design goals
+
+| Goal | How it is met | Evidence |
+| --- | --- | --- |
+| Boundaries survive edits | a cut depends only on the previous 64 (Gear) or 48 (Rabin) bytes | insertion and deletion tests; after 200 edits to a 67 MB tree, 96.5% still deduplicates, against 1.6% for fixed blocks |
+| Chunk sizes are bounded and predictable | `min` / `avg` / `max` limits; normalized masks narrow the spread | property tests; coefficient of variation 0.30 |
+| Works on streams of unknown length with any buffer size | constant-size state, `feed()` / `finish()` | tests feeding 1 byte to 70 KB at a time give identical chunks |
+| Chunking is not the bottleneck | bytes that cannot affect a cut are skipped; one table lookup per byte | about 2 GB/s on one core, above the 1.25 GB/s line rate of 10 GbE |
+| Chunk indexes stay valid across builds and machines | fixed constants, integer arithmetic only | golden vectors; identical chunk lengths on x86-64 Linux and arm64 macOS in CI |
+| Bugs do not hide behind lucky tests | independent reference implementation, injected-bug check | chunk-for-chunk agreement on 11 inputs; 18 of 18 injected bugs caught |
 
 ## Results
 
 Apple M1, one thread, Apple clang 16, `-O3`. Reproduce with `./build/cdc_bench all --corpus <dir>`.
 
-- **Gear chunks at about 2 GB/s, 4.7x faster than Rabin** (0.42 GB/s), and faster than merely hashing every byte with FNV-1a (0.80 GB/s), because it skips the first `min_size - 64` bytes of every chunk and does one table lookup per byte.
+- **Gear chunks at about 2 GB/s, 4.7x faster than Rabin** (0.42 GB/s), and about 2.5x the speed of a byte-at-a-time FNV-1a pass over the same buffer (0.80 GB/s), which is the reference cost of fingerprinting every byte.
 - **After 200 random edits to a 67 MB source tree, content-defined chunking still shares 93-96% of the data with the previous version at 8 KiB chunks (98-99% at 2 KiB); fixed-size blocks share 1.6%.**
 - **Normalized chunking narrows the chunk size spread from a coefficient of variation of 0.80 to 0.30**, which cuts the data lost per edit by about 40% (20.1 to 11.8 KB per edit at 8 KiB chunks).
 
@@ -112,11 +123,16 @@ Invalid limits throw `std::invalid_argument`.
 
 | Check | What it establishes |
 | --- | --- |
-| 25 unit tests | chunks tile the input and respect the limits; boundaries do not depend on how input is fed (1-byte to 70 KB pieces); rolling hashes equal the hash computed from the window; boundaries survive insertions and deletions; sizes match the target; the decision exactly at `min_size` matches the definition |
+| 26 unit tests | chunks tile the input and respect the limits; boundaries do not depend on how input is fed (1-byte to 70 KB pieces); rolling hashes equal the hash computed from the window; boundaries survive insertions and deletions; sizes match the target; the decision exactly at `min_size` matches the definition; 300 random parameter sets, contents and feed sizes satisfy the same invariants |
 | Differential test | the library's chunk lengths equal those of `tests/reference.py` on 11 inputs and parameter sets. The reference computes every cut from the definition with no rolling state and shares no code with the library. It also checks that the Rabin polynomial is irreducible |
 | Golden vectors | the boundaries of a fixed input do not change, which would invalidate stored chunk indexes |
 | Mutation check | `tests/mutation_check.py` injects 18 bugs (off-by-one, swapped masks, wrong shift, ...) and confirms the tests catch each; two edits that cannot matter, because the sliding window makes the state irrelevant, survive as expected |
 | CI | gcc and clang on Linux (x86-64), clang on macOS (arm64), all with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror`; the cross-check runs on each, so chunk boundaries are identical across the two architectures; an AddressSanitizer and UBSan job; the mutation check |
+
+## Status and limits
+
+Version 0.1.0. Single-threaded, no SIMD. Tested on Linux (x86-64) and macOS (arm64), not on Windows. A chunker object holds
+per-stream state, so use one per stream. The `cdc` tool reads whole files into memory. The API may change before 1.0.
 
 Design notes, deviations from the papers, and limits: [docs/DESIGN.md](docs/DESIGN.md).
 

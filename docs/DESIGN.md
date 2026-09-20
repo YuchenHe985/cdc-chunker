@@ -71,11 +71,15 @@ boundary, so nothing after the edit deduplicates.
 | Behaviour tests (`test_dedup.cpp`) | boundaries survive an insertion and a deletion, mean size is near the target, normalization narrows the distribution |
 | Differential test (`tests/cross_check.py`) | 11 inputs and parameter sets produce the same chunk lengths as `tests/reference.py`, which computes every cut from the definition with no rolling state and shares no code with the library |
 | Golden vectors (`test_golden.cpp`) | any change to the algorithm moves boundaries, which would invalidate stored chunk indexes |
-| Mutation check (`tests/mutation_check.py`) | 18 deliberate bugs are each caught; 2 edits that cannot matter (state made irrelevant by the window) survive, as they should |
+| Mutation check (`tests/mutation_check.py`) | 18 injected bugs are each caught; 2 edits that cannot change the output (state the window makes irrelevant) survive, which documents that property |
 | Sanitizers | ASan and UBSan over the whole suite in CI |
 
 ## Limits
 
+- Tested on Linux (x86-64, gcc and clang) and macOS (arm64, clang). Not tested on Windows or 32-bit targets.
+- A chunker object holds per-stream state and is not thread-safe: use one per stream. The tables are
+  immutable and shared, so separate objects can run on separate threads.
+- The `cdc` tool reads each input file into memory; the library itself only needs the last 64 bytes.
 - Single-threaded, no SIMD. Chunking a large file in parallel needs a coordinator that splits at
   content-defined points; that is out of scope here.
 - The tools identify chunks by 64-bit FNV-1a, which is fine for measuring overlap and not a substitute
