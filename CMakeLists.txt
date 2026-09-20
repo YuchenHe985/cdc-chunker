@@ -48,6 +48,7 @@ add_executable(cdc_tests
   tests/test_params.cpp
   tests/test_hash.cpp
   tests/test_chunkers.cpp
+  tests/test_parallel.cpp
   tests/test_dedup.cpp
   tests/test_golden.cpp)
 target_link_libraries(cdc_tests PRIVATE cdc)
