@@ -119,6 +119,45 @@ also disturb the neighbouring chunk. Smaller chunks dedupe better but cost more 
 Caveats: the throughput data is random bytes (no cache-friendly repetition), the dedup data is source code with synthetic
 edits, and chunk identity is a 64-bit FNV-1a hash, adequate for measuring overlap and not for a real store.
 
+### Deduplication of model files
+
+A question a chunking store faces every time someone fine-tunes a model: how much of the new file is already stored? The base is
+[Qwen2.5-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) (BF16, cast to fp16); the fine-tuned model is the same
+network after LoRA (rank 16 on every attention and MLP projection) was merged into the weights and saved as fp16, from
+[llm-finetune-lab](https://github.com/YuchenHe985/llm-finetune-lab). The GGUF files come from llama.cpp's converter and `llama-quantize`, run on each
+model in the same way. Chunker: `cdc dedup --algo gear --min 8192 --avg 65536 --max 131072 BASE FINETUNED`, the limits Hugging Face's Xet uses. "Shared" is the
+fraction of the fine-tuned file that lies in chunks byte-identical to a chunk of the base file.
+
+| Format | Fine-tuned size | Shared with base | What is shared |
+| --- | ---: | ---: | --- |
+| safetensors as published (base BF16, fine-tuned F16) | 988 MB | 0.0% | nothing: the dtypes differ |
+| safetensors, both F16 | 988 MB | 27.6% | the token embedding |
+| GGUF F16 | 994 MB | 28.0% | embedding and the tokenizer stored in the file (5.8 MB) |
+| GGUF Q8_0 | 531 MB | 28.3% | the same |
+| GGUF Q4_K_M | 398 MB | 37.8% | the same; the embedding stays 8-bit (145 MB) while the rest shrinks |
+
+`tools/compare_tensors.py` shows why, tensor group by tensor group (safetensors, both F16; identical means the same bytes):
+
+| tensor group | size | elements identical |
+| --- | ---: | ---: |
+| token embedding | 272 MB | 100% |
+| MLP projections (gate, up, down) | 628 MB | 0.7-1.5% |
+| attention projections (q, k, v, o) | 88 MB | 0.6-1.1% |
+| norms and biases | 0.1 MB | 100% |
+
+- **Only untouched tensors deduplicate.** LoRA changed about 99% of the values in every projection matrix, so chunks inside them never match: the store
+  reuses the embedding (and, in GGUF, the tokenizer) and takes the other 716 MB (72%) as new. The adapter alone is 8.8M parameters, about 35 MB in fp32, which is what
+  to ship or store if the base is already there.
+- **The dtype decides more than the chunker does.** The unchanged 272 MB embedding is fully shared when both files are fp16 and shares nothing when one
+  side is BF16. Check dtypes before expecting any reuse.
+- **Quantization shrinks what can be shared.** The embedding drops from 272 MB to 145 MB, so the bytes saved fall from 278 MB (GGUF F16) to 150 MB
+  (Q8_0 and Q4_K_M); Q4_K_M's 37.8% is higher only because the rest of the file shrank more.
+- Both files here have the same size and layout, so fixed 64 KiB blocks also find 27.6%; content-defined boundaries matter when offsets shift, as in the
+  edit experiment above. Swapping the two files gives the same figure, and a file against itself gives 100%.
+
+Caveats: one model and one LoRA configuration (the embedding was not trained; a full fine-tune or a LoRA that includes the embedding would share less);
+the Gear tables here are not Xet's, so boundaries differ from what Xet computes; the BF16 to fp16 cast is mine.
+
 ## Use
 
 ```cpp
