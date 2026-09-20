@@ -116,7 +116,7 @@ Invalid limits throw `std::invalid_argument`.
 | Differential test | the library's chunk lengths equal those of `tests/reference.py` on 11 inputs and parameter sets. The reference computes every cut from the definition with no rolling state and shares no code with the library. It also checks that the Rabin polynomial is irreducible |
 | Golden vectors | the boundaries of a fixed input do not change, which would invalidate stored chunk indexes |
 | Mutation check | `tests/mutation_check.py` injects 18 bugs (off-by-one, swapped masks, wrong shift, ...) and confirms the tests catch each; two edits that cannot matter, because the sliding window makes the state irrelevant, survive as expected |
-| CI | gcc and clang on Linux, clang on macOS, all with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror`; an AddressSanitizer and UBSan job; the mutation check |
+| CI | gcc and clang on Linux (x86-64), clang on macOS (arm64), all with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror`; the cross-check runs on each, so chunk boundaries are identical across the two architectures; an AddressSanitizer and UBSan job; the mutation check |
 
 Design notes, deviations from the papers, and limits: [docs/DESIGN.md](docs/DESIGN.md).
 
