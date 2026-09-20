@@ -167,7 +167,7 @@ Invalid limits throw `std::invalid_argument`.
 
 ## Status and limits
 
-Version 0.2.0. The streaming interface is sequential; `chunk_parallel` needs the whole buffer in memory. No SIMD. Tested on Linux (x86-64) and macOS (arm64), not on Windows. A chunker object holds
+The streaming interface is sequential; `chunk_parallel` needs the whole buffer in memory. No SIMD. Tested on Linux (x86-64) and macOS (arm64), not on Windows. A chunker object holds
 per-stream state, so use one per stream. The `cdc` tool reads whole files into memory. The API may change before 1.0.
 
 Design notes, deviations from the papers, and limits: [docs/DESIGN.md](docs/DESIGN.md).
