@@ -1,6 +1,7 @@
 // cdc_bench: throughput, chunk size distribution and deduplication after edits. Prints markdown.
 //
 //   cdc_bench throughput [--size-mb 256] [--reps 7]
+//   cdc_bench parallel   [--size-mb 256] [--reps 7]
 //   cdc_bench sizes      [--size-mb 64]
 //   cdc_bench dedup      --corpus DIR [--cap-mb 64] [--edits 200] [--seed 1]
 //   cdc_bench all        --corpus DIR
@@ -10,10 +11,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -35,7 +38,7 @@ struct Args {
 };
 
 Args parse(int argc, char** argv) {
-  if (argc < 2) throw std::invalid_argument("mode required: throughput, sizes, dedup or all");
+  if (argc < 2) throw std::invalid_argument("mode required: throughput, parallel, sizes, dedup or all");
   Args a;
   a.mode = argv[1];
   for (int i = 2; i < argc; ++i) {
@@ -129,6 +132,49 @@ void throughput(const Args& a) {
   std::sort(rate.begin(), rate.end());
   std::printf("| FNV-1a 64 over the buffer (reference) | - | %.0f | %.0f | %.0f | - |\n\n", rate[rate.size() / 2],
               rate.front(), rate.back());
+}
+
+bool same_chunks(const std::vector<cdc::Chunk>& a, const std::vector<cdc::Chunk>& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i)
+    if (a[i].offset != b[i].offset || a[i].length != b[i].length) return false;
+  return true;
+}
+
+void parallel(const Args& a) {
+  const Bytes data = random_bytes(a.size_mb << 20, 7);
+  const double mb = static_cast<double>(data.size()) / 1e6;
+  std::printf("## Multi-core chunking\n\n%zu MiB of pseudo-random bytes, avg 8 KiB, median of %d runs after a warm-up; %u hardware threads. "
+              "Every multi-threaded result is compared with the sequential chunks and must be identical.\n\n",
+              a.size_mb, a.reps, std::thread::hardware_concurrency());
+  std::printf("| chunker | threads | median MB/s | speedup vs sequential | identical chunks |\n| --- | ---: | ---: | ---: | :---: |\n");
+  for (const Spec& s : specs(8192)) {
+    if (s.algo == "fixed" || s.label == "gear (norm 0)") continue;
+    const auto chunker = cdc::make_chunker(s.algo, s.params);
+    auto median = [&](const std::function<std::vector<cdc::Chunk>()>& run, std::vector<cdc::Chunk>* last) {
+      *last = run();  // warm-up
+      std::vector<double> rate;
+      for (int r = 0; r < a.reps; ++r) {
+        const auto t0 = std::chrono::steady_clock::now();
+        *last = run();
+        rate.push_back(mb / seconds_since(t0));
+      }
+      std::sort(rate.begin(), rate.end());
+      return rate[rate.size() / 2];
+    };
+    std::vector<cdc::Chunk> reference;
+    const double base = median([&] { return cdc::chunk_all(*chunker, data.data(), data.size()); }, &reference);
+    std::printf("| %s | sequential | %.0f | 1.00x | - |\n", s.label.c_str(), base);
+    for (unsigned threads : {1U, 2U, 4U, 8U}) {
+      std::vector<cdc::Chunk> got;
+      const double rate =
+          median([&] { return cdc::chunk_parallel(s.algo, s.params, data.data(), data.size(), threads); }, &got);
+      std::printf("| %s | %u | %.0f | %.2fx | %s |\n", s.label.c_str(), threads, rate, rate / base,
+                  same_chunks(got, reference) ? "yes" : "NO");
+      if (!same_chunks(got, reference)) throw std::runtime_error("parallel chunks differ from sequential chunks");
+    }
+  }
+  std::printf("\n");
 }
 
 struct SizeStats {
@@ -277,9 +323,10 @@ int main(int argc, char** argv) {
   try {
     const Args a = parse(argc, argv);
     if (a.mode == "throughput" || a.mode == "all") throughput(a);
+    if (a.mode == "parallel" || a.mode == "all") parallel(a);
     if (a.mode == "sizes" || a.mode == "all") sizes(a);
     if (a.mode == "dedup" || a.mode == "all") dedup(a);
-    if (a.mode != "throughput" && a.mode != "sizes" && a.mode != "dedup" && a.mode != "all")
+    if (a.mode != "throughput" && a.mode != "parallel" && a.mode != "sizes" && a.mode != "dedup" && a.mode != "all")
       throw std::invalid_argument("unknown mode " + a.mode);
     return 0;
   } catch (const std::exception& e) {
