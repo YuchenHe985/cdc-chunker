@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, cxx: g++}
+          - {os: ubuntu-latest, cxx: clang++}
+          - {os: macos-latest, cxx: clang++}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCDC_WERROR=ON -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build build -j
+      - name: Unit tests and cross-check against the reference
+        run: ctest --test-dir build --output-on-failure
+      - name: Benchmark smoke test
+        run: |
+          ./build/cdc_bench throughput --size-mb 16 --reps 1 > /dev/null
+          ./build/cdc_bench sizes --size-mb 8 > /dev/null
+          ./build/cdc_bench dedup --corpus src --edits 5 > /dev/null
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure with ASan and UBSan
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCDC_SANITIZE=ON -DCDC_WERROR=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Break the library on purpose and check the tests notice
+        run: python3 tests/mutation_check.py
