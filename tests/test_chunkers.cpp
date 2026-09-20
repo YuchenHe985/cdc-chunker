@@ -76,27 +76,30 @@ bool same(const std::vector<cdc::Chunk>& a, const std::vector<cdc::Chunk>& b) {
 }  // namespace
 
 // Chunks tile the input exactly and respect the size limits.
+static void verify_chunks(const std::string& ctx, const Config& cfg, const std::vector<std::uint8_t>& data,
+                          const std::vector<cdc::Chunk>& chunks) {
+  std::uint64_t next = 0;
+  for (std::size_t i = 0; i < chunks.size(); ++i) {
+    if (chunks[i].offset != next) minitest::fail(__FILE__, __LINE__, "gap or overlap: " + ctx);
+    next += chunks[i].length;
+    const bool last = i + 1 == chunks.size();
+    if (chunks[i].length == 0) minitest::fail(__FILE__, __LINE__, "empty chunk: " + ctx);
+    if (cfg.algo == "fixed") {
+      if (chunks[i].length > cfg.params.avg_size || (!last && chunks[i].length != cfg.params.avg_size))
+        minitest::fail(__FILE__, __LINE__, "fixed chunk size: " + ctx);
+    } else {
+      if (chunks[i].length > cfg.params.max_size) minitest::fail(__FILE__, __LINE__, "above max: " + ctx);
+      if (!last && chunks[i].length < cfg.params.min_size) minitest::fail(__FILE__, __LINE__, "below min: " + ctx);
+    }
+  }
+  if (next != data.size()) minitest::fail(__FILE__, __LINE__, "chunks do not sum to the input: " + ctx);
+}
+
 TEST(chunks_cover_the_input_and_respect_limits) {
   for (const Config& cfg : configs()) {
     for (const Data& d : inputs()) {
       const auto chunker = cdc::make_chunker(cfg.algo, cfg.params);
-      const auto chunks = cdc::chunk_all(*chunker, d.bytes.data(), d.bytes.size());
-      std::uint64_t next = 0;
-      for (std::size_t i = 0; i < chunks.size(); ++i) {
-        const std::string ctx = cfg.label() + " on " + d.name;
-        if (chunks[i].offset != next) minitest::fail(__FILE__, __LINE__, "gap or overlap: " + ctx);
-        next += chunks[i].length;
-        const bool last = i + 1 == chunks.size();
-        if (chunks[i].length == 0) minitest::fail(__FILE__, __LINE__, "empty chunk: " + ctx);
-        if (cfg.algo == "fixed") {
-          if (chunks[i].length > cfg.params.avg_size || (!last && chunks[i].length != cfg.params.avg_size))
-            minitest::fail(__FILE__, __LINE__, "fixed chunk size: " + ctx);
-        } else {
-          if (chunks[i].length > cfg.params.max_size) minitest::fail(__FILE__, __LINE__, "above max: " + ctx);
-          if (!last && chunks[i].length < cfg.params.min_size) minitest::fail(__FILE__, __LINE__, "below min: " + ctx);
-        }
-      }
-      if (next != d.bytes.size()) minitest::fail(__FILE__, __LINE__, "chunks do not sum to the input: " + cfg.label());
+      verify_chunks(cfg.label() + " on " + d.name, cfg, d.bytes, cdc::chunk_all(*chunker, d.bytes.data(), d.bytes.size()));
     }
   }
 }
@@ -167,17 +170,19 @@ TEST(rabin_on_zeros_cuts_at_min_size) {
   for (const auto& c : chunks) CHECK_EQ(c.length, p.min_size);
 }
 
-// A chunker that never finds a cut point is bounded by max_size.
-TEST(gear_output_is_bounded_when_no_cut_matches) {
+// With constant input the Gear hash is constant once the window is full, and for this table it never
+// matches the cut mask, so every chunk ends at the forced cut at max_size.
+TEST(gear_forces_a_cut_at_max_size_when_no_cut_point_matches) {
   cdc::Params p = cdc::Params::from_average(1024);
-  p.normalization = 4;  // avg_bits + 4 = 14 strict bits, avg_bits - 4 = 6 relaxed bits
+  p.normalization = 4;
   cdc::GearChunker chunker(p);
-  const std::vector<std::uint8_t> data(200000, 0xFF);  // constant input: the hash is periodic, not random
+  const std::vector<std::uint8_t> data(200000, 0xFF);
   const auto chunks = cdc::chunk_all(chunker, data.data(), data.size());
+  CHECK(chunks.size() > 10);
   std::size_t total = 0;
-  for (const auto& c : chunks) {
-    CHECK(c.length <= p.max_size);
-    total += c.length;
+  for (std::size_t i = 0; i < chunks.size(); ++i) {
+    total += chunks[i].length;
+    if (i + 1 < chunks.size()) CHECK_EQ(chunks[i].length, p.max_size);
   }
   CHECK_EQ(total, data.size());
 }
@@ -215,5 +220,40 @@ TEST(decision_at_min_size_matches_the_hash_definition) {
     // The comparison is only meaningful if cuts at min_size actually occur.
     CHECK(gear_cuts > 50);
     CHECK(rabin_cuts > 100);
+  }
+}
+
+// The hand-picked configurations above are not the whole parameter space. Random valid parameters,
+// random content (random, zeros, repeated blocks) and random feed sizes must all satisfy the same
+// invariants, and feeding in pieces must not change the boundaries.
+TEST(random_parameters_content_and_feed_sizes) {
+  std::uint64_t state = 20260920;
+  auto rnd = [&state](std::uint64_t n) { return cdc::detail::splitmix64(state) % n; };
+  for (int iter = 0; iter < 300; ++iter) {
+    Config cfg;
+    cfg.algo = std::vector<std::string>{"gear", "rabin", "fixed"}[rnd(3)];
+    cfg.params.min_size = 64 + rnd(1500);
+    cfg.params.avg_size = std::size_t{128} << rnd(7);
+    while (cfg.params.avg_size <= cfg.params.min_size) cfg.params.avg_size <<= 1;
+    cfg.params.max_size = cfg.params.avg_size * (2 + rnd(7));
+    cfg.params.normalization = static_cast<int>(rnd(5));
+    cfg.params.validate();
+
+    const std::size_t n = rnd(80000);
+    std::vector<std::uint8_t> data;
+    switch (rnd(3)) {
+      case 0: data = minitest::random_bytes(n, rnd(1000000)); break;
+      case 1: data.assign(n, static_cast<std::uint8_t>(rnd(256))); break;
+      default: {
+        const auto block = minitest::random_bytes(1 + rnd(3000), rnd(1000000));
+        for (std::size_t i = 0; i < n; ++i) data.push_back(block[i % block.size()]);
+      }
+    }
+    const std::string ctx = cfg.label() + " n=" + std::to_string(n);
+    const auto chunker = cdc::make_chunker(cfg.algo, cfg.params);
+    const auto whole = cdc::chunk_all(*chunker, data.data(), data.size());
+    verify_chunks(ctx, cfg, data, whole);
+    if (!same(run_streaming(*chunker, data, rnd(1000000), 1 + rnd(9000)), whole))
+      minitest::fail(__FILE__, __LINE__, "streaming differs: " + ctx);
   }
 }

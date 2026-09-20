@@ -3,8 +3,8 @@
 #include "minitest.hpp"
 
 // Chunk lengths for a fixed input, produced by the definition-based reference (tests/reference.py).
-// If a change to the algorithms moves any boundary, these fail, which is what a stored index of
-// chunk hashes would suffer from as well.
+// A change that moves any boundary fails here: chunk indexes built with an earlier version would no
+// longer match the chunks it produces.
 namespace {
 
 const std::vector<std::uint8_t>& input() {
