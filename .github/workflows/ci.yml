@@ -38,6 +38,17 @@ jobs:
       - run: cmake --build build -j
       - run: ctest --test-dir build --output-on-failure
 
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lower ASLR entropy so ThreadSanitizer can map its shadow memory
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Configure with ThreadSanitizer
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCDC_TSAN=ON -DCDC_WERROR=ON -DCMAKE_CXX_COMPILER=clang++
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+
   mutation:
     runs-on: ubuntu-latest
     steps:

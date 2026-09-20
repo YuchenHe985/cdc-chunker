@@ -7,8 +7,15 @@ the chunks around it. Deduplicating storage, incremental backup and delta sync a
 blocks, one inserted byte changes every block after it.
 
 It provides two chunkers behind one streaming interface, Gear (FastCDC-style, with normalized chunk sizes) and Rabin, a
-command line tool that reports how much of a new file version is already stored, and a benchmark harness. C++17, standard
-library only.
+multi-threaded mode that returns exactly the same chunks as the sequential one, a command line tool that reports how much of
+a new file version is already stored, and a benchmark harness. C++17, standard library only.
+
+Where it matters: chunking sits on the write path of deduplicating storage, so it has to keep up with the disks or the
+network. Model hubs are a current example: Hugging Face's Xet storage splits model and dataset files with a Gear-based
+content-defined chunker (minimum 8 KiB, target about 64 KiB, maximum 128 KiB, see its
+[chunking spec](https://huggingface.co/docs/xet/en/chunking)) and keeps only the chunks it has not seen before. Those limits
+are valid `Params` here (`min_size = 8192`, `avg_size = 65536`, `max_size = 131072`); the boundaries will not match Xet's,
+because the hash table differs.
 
 ## Design goals
 
@@ -17,9 +24,9 @@ library only.
 | Boundaries survive edits | a cut depends only on the previous 64 (Gear) or 48 (Rabin) bytes | insertion and deletion tests; after 200 edits to a 67 MB tree, 96.5% still deduplicates, against 1.6% for fixed blocks |
 | Chunk sizes are bounded and predictable | `min` / `avg` / `max` limits; normalized masks narrow the spread | property tests; coefficient of variation 0.30 |
 | Works on streams of unknown length with any buffer size | constant-size state, `feed()` / `finish()` | tests feeding 1 byte to 70 KB at a time give identical chunks |
-| Chunking is not the bottleneck | bytes that cannot affect a cut are skipped; one table lookup per byte | about 2 GB/s on one core, above the 1.25 GB/s line rate of 10 GbE |
-| Chunk indexes stay valid across builds and machines | fixed constants, integer arithmetic only | golden vectors; identical chunk lengths on x86-64 Linux and arm64 macOS in CI |
-| Bugs do not hide behind lucky tests | independent reference implementation, injected-bug check | chunk-for-chunk agreement on 11 inputs; 18 of 18 injected bugs caught |
+| Chunking is not the bottleneck | bytes that cannot affect a cut are skipped; one table lookup per byte; `chunk_parallel` uses all cores and returns the same chunks | about 2 GB/s on one core, 7.4 GB/s on 8 threads, against the 1.25 GB/s line rate of 10 GbE |
+| Chunk indexes stay valid across builds, machines and thread counts | fixed constants, integer arithmetic only; parallel and sequential chunks are identical by construction | golden vectors; identical chunk lengths on x86-64 Linux and arm64 macOS in CI; 500 random cases plus a sweep of segment boundaries compare parallel with sequential |
+| Bugs do not hide behind lucky tests | independent reference implementation, injected-bug check, ThreadSanitizer | chunk-for-chunk agreement on 11 inputs, single- and multi-threaded; 23 of 23 injected bugs caught |
 
 ## Results
 
@@ -45,6 +52,28 @@ Apple M1, one thread, Apple clang 16, `-O3`. Reproduce with `./build/cdc_bench a
 | gear (norm 0) | 32768 | 1937 | 1934 | 1954 |
 | gear (norm 2) | 32768 | 1989 | 1976 | 2012 |
 | FNV-1a 64 over the buffer (reference) | - | 798 | 797 | 799 |
+
+### Multi-core chunking
+
+`chunk_parallel` on a 256 MiB in-memory buffer, avg 8 KiB, median of 9 runs (8 hardware threads: 4 performance and 4 efficiency
+cores; the machine was not otherwise idle). Every multi-threaded result was compared with the sequential chunks by the
+benchmark itself and had to be identical.
+
+| chunker | threads | median MB/s | speedup vs sequential |
+| --- | ---: | ---: | ---: |
+| gear (norm 2) | sequential | 1966 | 1.00x |
+| gear (norm 2) | 1 | 1497 | 0.76x |
+| gear (norm 2) | 2 | 2911 | 1.48x |
+| gear (norm 2) | 4 | 5565 | 2.83x |
+| gear (norm 2) | 8 | 7388 | 3.76x |
+| rabin | sequential | 423 | 1.00x |
+| rabin | 1 | 216 | 0.51x |
+| rabin | 2 | 418 | 0.99x |
+| rabin | 4 | 800 | 1.89x |
+| rabin | 8 | 1167 | 2.76x |
+
+The parallel path is slower on one thread because it cannot skip the bytes at the start of each chunk (it does not know where
+chunks start until the second stage), so it pays off from two threads. Scaling is sublinear on this machine.
 
 ### Chunk size distribution
 
@@ -102,6 +131,12 @@ chunker.feed(block2, n2, print);
 chunker.finish(print);                                                // reports the last chunk
 ```
 
+For a buffer that is already in memory (for example a memory-mapped checkpoint), all cores, same chunks as above:
+
+```cpp
+const std::vector<cdc::Chunk> chunks = cdc::chunk_parallel("gear", cdc::Params::from_average(8192), data, size);
+```
+
 [examples/stream.cpp](examples/stream.cpp) is a complete program. Build and try the tools:
 
 ```bash
@@ -113,6 +148,7 @@ ctest --test-dir build                       # unit tests and the cross-check ag
 # mean=9489 stddev=2818 cv=0.30 min=2050 p5=4231 p50=9306 p95=14036 max=26066 forced_at_max=0
 
 ./build/cdc chunk --algo rabin --avg 8192 file.bin        # offset, length, hash per chunk
+./build/cdc chunk --algo gear --threads 0 file.bin        # all cores, identical output
 ./build/cdc dedup --algo gear --avg 8192 old.bin new.bin  # how much of new.bin is already in old.bin
 ```
 
@@ -123,15 +159,15 @@ Invalid limits throw `std::invalid_argument`.
 
 | Check | What it establishes |
 | --- | --- |
-| 26 unit tests | chunks tile the input and respect the limits; boundaries do not depend on how input is fed (1-byte to 70 KB pieces); rolling hashes equal the hash computed from the window; boundaries survive insertions and deletions; sizes match the target; the decision exactly at `min_size` matches the definition; 300 random parameter sets, contents and feed sizes satisfy the same invariants |
-| Differential test | the library's chunk lengths equal those of `tests/reference.py` on 11 inputs and parameter sets. The reference computes every cut from the definition with no rolling state and shares no code with the library. It also checks that the Rabin polynomial is irreducible |
+| 31 unit tests | chunks tile the input and respect the limits; boundaries do not depend on how input is fed (1-byte to 70 KB pieces); rolling hashes equal the hash computed from the window; boundaries survive insertions and deletions; sizes match the target; the decision exactly at `min_size` matches the definition; 300 random parameter sets, contents and feed sizes satisfy the same invariants; multi-threaded chunks equal sequential chunks on 500 random cases, across 1 to 12 threads, and at every segment boundary offset |
+| Differential test | the library's chunk lengths, single- and multi-threaded, equal those of `tests/reference.py` on 11 inputs and parameter sets. The reference computes every cut from the definition with no rolling state and shares no code with the library. It also checks that the Rabin polynomial is irreducible |
 | Golden vectors | the boundaries of a fixed input do not change, which would invalidate stored chunk indexes |
-| Mutation check | `tests/mutation_check.py` injects 18 bugs (off-by-one, swapped masks, wrong shift, ...) and confirms the tests catch each; two edits that cannot matter, because the sliding window makes the state irrelevant, survive as expected |
-| CI | gcc and clang on Linux (x86-64), clang on macOS (arm64), all with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror`; the cross-check runs on each, so chunk boundaries are identical across the two architectures; an AddressSanitizer and UBSan job; the mutation check |
+| Mutation check | `tests/mutation_check.py` injects 23 bugs (off-by-one, swapped masks, wrong shift, wrong warm-up at a thread boundary, ...) and confirms the tests catch each; two edits that cannot matter, because the sliding window makes the state irrelevant, survive as expected |
+| CI | gcc and clang on Linux (x86-64), clang on macOS (arm64), all with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror`; the cross-check runs on each, so chunk boundaries are identical across the two architectures; an AddressSanitizer and UBSan job; a ThreadSanitizer job; the mutation check |
 
 ## Status and limits
 
-Version 0.1.0. Single-threaded, no SIMD. Tested on Linux (x86-64) and macOS (arm64), not on Windows. A chunker object holds
+Version 0.2.0. The streaming interface is sequential; `chunk_parallel` needs the whole buffer in memory. No SIMD. Tested on Linux (x86-64) and macOS (arm64), not on Windows. A chunker object holds
 per-stream state, so use one per stream. The `cdc` tool reads whole files into memory. The API may change before 1.0.
 
 Design notes, deviations from the papers, and limits: [docs/DESIGN.md](docs/DESIGN.md).
@@ -140,9 +176,9 @@ Design notes, deviations from the papers, and limits: [docs/DESIGN.md](docs/DESI
 
 ```
 include/cdc/cdc.hpp   public API: Params, Chunker, GearChunker, RabinChunker, FixedChunker
-src/                  implementations
+src/                  implementations (gear, rabin, parallel)
 tools/cdc_cli.cpp     chunk, stats, dedup, info
-bench/bench.cpp       throughput, size distribution, dedup after edits
+bench/bench.cpp       throughput, multi-core scaling, size distribution, dedup after edits
 examples/stream.cpp   streaming example
 tests/                unit tests, reference implementation, cross-check, mutation check
 ```
