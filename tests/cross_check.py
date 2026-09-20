@@ -37,8 +37,8 @@ def make_input(size, seed, kind):
     return ref.random_bytes(size, seed)
 
 
-def run_cli(cli, algo, mn, avg, mx, norm, path):
-    cmd = [cli, "chunk", "--algo", algo, "--avg", str(avg), "--min", str(mn), "--max", str(mx), "--norm", str(norm), path]
+def run_cli(cli, algo, mn, avg, mx, norm, path, extra=()):
+    cmd = [cli, "chunk", "--algo", algo, "--avg", str(avg), "--min", str(mn), "--max", str(mx), "--norm", str(norm), *extra, path]
     out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     return [int(line.split("\t")[1]) for line in out.splitlines()]
 
@@ -70,18 +70,21 @@ def main():
             path = os.path.join(tmp, "input.bin")
             with open(path, "wb") as f:
                 f.write(data)
-            got = run_cli(args.cli, algo, mn, avg, mx, norm, path)
             if algo == "gear":
                 want = ref.gear_boundaries(data, mn, avg, mx, norm)
             else:
                 want = ref.rabin_boundaries(data, mn, avg, mx)
-            label = f"{algo} min={mn} avg={avg} max={mx} norm={norm} {kind} {size}B"
-            if got == want:
-                print(f"ok   {label}: {len(got)} chunks")
-            else:
-                failures += 1
-                first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
-                print(f"FAIL {label}: first difference at chunk {first}: library {got[first:first + 3]} reference {want[first:first + 3]}")
+            # the default single thread, and the multi-threaded path with segments small enough to split
+            # every input several times
+            for mode, extra in (("1 thread", ()), ("4 threads", ("--threads", "4", "--segment-min", "2048"))):
+                got = run_cli(args.cli, algo, mn, avg, mx, norm, path, extra)
+                label = f"{algo} min={mn} avg={avg} max={mx} norm={norm} {kind} {size}B, {mode}"
+                if got == want:
+                    print(f"ok   {label}: {len(got)} chunks")
+                else:
+                    failures += 1
+                    first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+                    print(f"FAIL {label}: first difference at chunk {first}: library {got[first:first + 3]} reference {want[first:first + 3]}")
     print("cross-check:", "PASS" if failures == 0 else f"{failures} failure(s)")
     return 1 if failures else 0
 
