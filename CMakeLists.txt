@@ -46,5 +46,11 @@ endforeach()
 enable_testing()
 add_test(NAME unit COMMAND cdc_tests)
 
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME cross_check
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cross_check.py --cli $<TARGET_FILE:cdc_cli>)
+endif()
+
 install(TARGETS cdc cdc_cli ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
