@@ -30,9 +30,21 @@ add_executable(cdc_cli tools/cdc_cli.cpp)
 set_target_properties(cdc_cli PROPERTIES OUTPUT_NAME cdc)
 target_link_libraries(cdc_cli PRIVATE cdc)
 
-foreach(t cdc cdc_cli)
+add_executable(cdc_tests
+  tests/test_main.cpp
+  tests/test_params.cpp
+  tests/test_hash.cpp
+  tests/test_chunkers.cpp
+  tests/test_dedup.cpp
+  tests/test_golden.cpp)
+target_link_libraries(cdc_tests PRIVATE cdc)
+
+foreach(t cdc cdc_cli cdc_tests)
   target_compile_options(${t} PRIVATE ${CDC_WARNINGS})
 endforeach()
+
+enable_testing()
+add_test(NAME unit COMMAND cdc_tests)
 
 install(TARGETS cdc cdc_cli ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
