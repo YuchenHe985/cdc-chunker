@@ -1,6 +1,6 @@
 # cdc-chunker
 
-[![ci](https://github.com/YuchenHe985/cdc-chunker/actions/workflows/ci.yml/badge.svg)](https://github.com/YuchenHe985/cdc-chunker/actions/workflows/ci.yml)
+[![ci](https://github.com/YuchenHe985/cdc-chunker/actions/workflows/ci.yml/badge.svg)](https://github.com/YuchenHe985/cdc-chunker/actions/workflows/ci.yml) ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=c%2B%2B&logoColor=white) [![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f.svg)](LICENSE)
 
 cdc-chunker splits a byte stream into variable-size chunks whose boundaries depend on the content, so an edit changes only
 the chunks around it. Deduplicating storage, incremental backup and delta sync are built on this property; with fixed-size
@@ -9,6 +9,8 @@ blocks, one inserted byte changes every block after it.
 It provides two chunkers behind one streaming interface, Gear (FastCDC-style, with normalized chunk sizes) and Rabin, a
 multi-threaded mode that returns exactly the same chunks as the sequential one, a command line tool that reports how much of
 a new file version is already stored, and a benchmark harness. C++17, standard library only.
+
+> **Measured on Apple M1:** about **2.0 GB/s** sequential and **7.4 GB/s** with 8 threads; **96.5%** reuse after 200 random edits at an 8 KiB target chunk size; **31 tests** plus a **23/23 mutation check**.
 
 Where it matters: chunking sits on the write path of deduplicating storage, so it has to keep up with the disks or the
 network. Model hubs are a current example: Hugging Face's Xet storage splits model and dataset files with a Gear-based
